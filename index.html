@@ -96,6 +96,8 @@
   .height-calib{margin-bottom:10px;}
   .height-calib label{display:block;font-size:10.5px;color:var(--chalk-dim);margin-bottom:4px;}
   .height-calib input{width:100px;background:#171310;border:1px solid var(--line);color:var(--chalk);border-radius:6px;padding:7px 9px;font-family:var(--mono);font-size:13px;}
+  .accuracy-toggle{display:flex;align-items:flex-start;gap:8px;font-size:11.5px;color:var(--chalk-dim);margin-bottom:10px;line-height:1.4;cursor:pointer;}
+  .accuracy-toggle input{margin-top:2px;flex-shrink:0;}
   .pose-status{font-size:11.5px;padding:8px 10px;border-radius:7px;margin-bottom:10px;display:flex;align-items:center;gap:7px;}
   .pose-status.loading{background:#241a14;color:var(--chalk-dim);}
   .pose-status.active{background:rgba(95,167,119,0.12);color:var(--good);}
@@ -161,6 +163,10 @@
           <label for="height-input">Your height (in), optional &mdash; for stride length in real units</label>
           <input type="number" id="height-input" min="36" max="96" step="0.5" placeholder="e.g. 72">
         </div>
+        <label class="accuracy-toggle">
+          <input type="checkbox" id="accuracy-toggle">
+          Higher-accuracy tracking &mdash; slower, bigger download, but a real accuracy upgrade over the default model
+        </label>
         <div id="pose-status" class="pose-status" style="display:none;"></div>
         <div id="cam-analyze"></div>
         <div class="progress-wrap" id="progress-wrap" style="display:none;"><div class="progress-bar" id="progress-bar"></div></div>
@@ -507,10 +513,11 @@ function withTimeout(promise, ms, label){
   ]);
 }
 
-let _poseDetectorPromise = null;
-function getPoseDetector(){
-  if(_poseDetectorPromise) return _poseDetectorPromise;
-  _poseDetectorPromise = (async ()=>{
+const _poseDetectorPromises = {};
+function getPoseDetector(useThunder){
+  const key = useThunder ? 'thunder' : 'lightning';
+  if(_poseDetectorPromises[key]) return _poseDetectorPromises[key];
+  const p = (async ()=>{
     if(!window.tf){
       await withTimeout(loadScriptOnce('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js'), 15000, 'Loading TensorFlow.js');
     }
@@ -519,17 +526,18 @@ function getPoseDetector(){
     }
     if(!window.tf || !window.poseDetection) throw new Error('Pose libraries did not load');
     await window.tf.ready();
+    const modelType = useThunder
+      ? window.poseDetection.movenet.modelType.SINGLEPOSE_THUNDER
+      : window.poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING;
     const detector = await withTimeout(
-      window.poseDetection.createDetector(
-        window.poseDetection.SupportedModels.MoveNet,
-        { modelType: window.poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
-      ),
-      20000, 'Loading MoveNet model'
+      window.poseDetection.createDetector(window.poseDetection.SupportedModels.MoveNet, { modelType }),
+      30000, 'Loading MoveNet model'
     );
     return detector;
   })();
-  _poseDetectorPromise.catch(()=>{ _poseDetectorPromise = null; }); // allow retry on next analysis if this attempt failed
-  return _poseDetectorPromise;
+  _poseDetectorPromises[key] = p;
+  p.catch(()=>{ delete _poseDetectorPromises[key]; }); // allow retry on next analysis if this attempt failed
+  return p;
 }
 
 // Samples the trimmed clip at the same rate as analyzeVideo, running the
@@ -1689,6 +1697,7 @@ const poseMetricsCard = document.getElementById('pose-metrics-card');
 const autosaveNote = document.getElementById('autosave-note');
 const poseStatusEl = document.getElementById('pose-status');
 const heightInput = document.getElementById('height-input');
+const accuracyToggle = document.getElementById('accuracy-toggle');
 
 // persist the height setting locally (device setting, not per-throw)
 (async ()=>{
@@ -1726,12 +1735,13 @@ const analyzeSlot = createCameraSlot({
     // model fetch blocked, tracking confidence too low — falls back to the
     // motion-energy pipeline, which stays fully functional either way.
     try{
-      setPoseStatus('loading', 'Loading pose model\u2026');
-      const detector = await getPoseDetector();
-      setPoseStatus('loading', 'Tracking joints\u2026 (denser pass, may take a bit longer)');
+      const useThunder = accuracyToggle.checked;
+      setPoseStatus('loading', useThunder ? 'Loading higher-accuracy pose model\u2026 (bigger download)' : 'Loading pose model\u2026');
+      const detector = await getPoseDetector(useThunder);
+      setPoseStatus('loading', 'Tracking joints\u2026 (denser pass' + (useThunder?' + higher-accuracy model':'') + ', may take a bit longer)');
       const poseResult = await withTimeout(
         analyzePose(videoEl, detector, p=>{ progressBar.style.width = (p*100).toFixed(0)+'%'; }, range),
-        120000, 'Pose tracking'
+        useThunder ? 180000 : 120000, 'Pose tracking'
       );
       phases = detectPhasesFromPose(poseResult.times, poseResult.frames);
       const heightVal = parseFloat(heightInput.value);
