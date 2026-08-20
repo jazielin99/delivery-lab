@@ -688,16 +688,30 @@ function detectPhasesFromPose(times, frames){
   // shoulder-elbow-wrist interior angle, so these are directly
   // comparable to benchmarks like "knee ~45deg->30deg, elbow ~90deg->25deg"
   // without a mental unit conversion.
-  function kneeAngle(i){
-    const h=kp(frames[i],leadHip), k=kp(frames[i],leadKnee), a=kp(frames[i],leadAnkle);
-    const interior = (ok(h,0.5)&&ok(k,0.5)&&ok(a,0.5)) ? angleAt(h,k,a) : null;
+  // Requiring the exact target frame to clear our confidence bar is
+  // needlessly strict right at release, since that's the single blurriest
+  // instant in the clip. Search a couple samples on either side for the
+  // best-confidence frame that still clears the bar, and use that instead
+  // — same trust threshold, just not pinned to one potentially-blurry frame.
+  function angleNear(centerIdx, aIdx, bIdx, cIdx, windowRadius){
+    windowRadius = windowRadius==null ? 2 : windowRadius;
+    let bestI = null, bestScore = -1;
+    for(let d=-windowRadius; d<=windowRadius; d++){
+      const i = centerIdx + d;
+      if(i<0 || i>=frames.length) continue;
+      const a=kp(frames[i],aIdx), b=kp(frames[i],bIdx), c=kp(frames[i],cIdx);
+      if(ok(a,0.5)&&ok(b,0.5)&&ok(c,0.5)){
+        const score = Math.min(a.score,b.score,c.score);
+        if(score > bestScore){ bestScore = score; bestI = i; }
+      }
+    }
+    if(bestI===null) return null;
+    const a=kp(frames[bestI],aIdx), b=kp(frames[bestI],bIdx), c=kp(frames[bestI],cIdx);
+    const interior = angleAt(a,b,c);
     return interior==null ? null : 180 - interior;
   }
-  function elbowAngle(i){
-    const s=kp(frames[i],shoulder), e=kp(frames[i],elbow), w=kp(frames[i],wrist);
-    const interior = (ok(s,0.5)&&ok(e,0.5)&&ok(w,0.5)) ? angleAt(s,e,w) : null;
-    return interior==null ? null : 180 - interior;
-  }
+  function kneeAngle(i){ return angleNear(i, leadHip, leadKnee, leadAnkle); }
+  function elbowAngle(i){ return angleNear(i, shoulder, elbow, wrist); }
   const kneeAngleAtPlant = kneeAngle(footPlantIdx);
   const kneeAngleAtRelease = kneeAngle(peakIdx);
   const elbowAngleAtPlant = elbowAngle(footPlantIdx);
