@@ -682,12 +682,12 @@ function detectPhasesFromPose(times, frames){
   // without a mental unit conversion.
   function kneeAngle(i){
     const h=kp(frames[i],leadHip), k=kp(frames[i],leadKnee), a=kp(frames[i],leadAnkle);
-    const interior = (ok(h)&&ok(k)&&ok(a)) ? angleAt(h,k,a) : null;
+    const interior = (ok(h,0.5)&&ok(k,0.5)&&ok(a,0.5)) ? angleAt(h,k,a) : null;
     return interior==null ? null : 180 - interior;
   }
   function elbowAngle(i){
     const s=kp(frames[i],shoulder), e=kp(frames[i],elbow), w=kp(frames[i],wrist);
-    const interior = (ok(s)&&ok(e)&&ok(w)) ? angleAt(s,e,w) : null;
+    const interior = (ok(s,0.5)&&ok(e,0.5)&&ok(w,0.5)) ? angleAt(s,e,w) : null;
     return interior==null ? null : 180 - interior;
   }
   const kneeAngleAtPlant = kneeAngle(footPlantIdx);
