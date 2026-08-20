@@ -540,7 +540,7 @@ async function analyzePose(videoEl, detector, onProgress, opts){
   const startTime = Math.max(0, opts.startTime || 0);
   const endTime = Math.min(fullDuration, opts.endTime != null ? opts.endTime : fullDuration);
   const duration = Math.max(0.05, endTime - startTime);
-  const steps = Math.max(24, Math.min(70, Math.round(duration * 25))); // fewer than motion-energy pass — inference is heavier per frame
+  const steps = Math.max(30, Math.min(140, Math.round(duration * 45))); // denser than before — the real bottleneck was this sampling rate, not camera fps
   const times = [];
   for(let i=0;i<steps;i++) times.push((i/(steps-1))*duration);
 
@@ -633,13 +633,27 @@ function detectPhasesFromPose(times, frames){
   // flattening in the descent, which fired on minor mid-stride wobbles
   // instead of the actual touchdown — same class of bug as the earlier
   // balance-point mislabeling. Using the true extremum (like windup end
-  // above) instead of "first plausible dip" fixes that.
-  let footPlantIdx = null, worstY = -Infinity;
+  // above) instead of "first plausible dip" fixes that — but the extremum
+  // itself can land a bit late, since the ankle often keeps settling
+  // slightly after first contact. So: find the eventual low point, then
+  // walk back to the FIRST frame that's already close to it — the onset
+  // of landing, not the fully-settled position.
+  let footPlantIdx = null, worstY = -Infinity, startY = null;
   for(let i=windupEndIdx+2;i<peakIdx-1;i++){
     const k = kp(frames[i], leadAnkle);
-    if(ok(k) && k.y > worstY){ worstY = k.y; footPlantIdx = i; }
+    if(ok(k)){
+      if(startY === null) startY = k.y;
+      if(k.y > worstY){ worstY = k.y; footPlantIdx = i; }
+    }
   }
   let footPlantEstimated = footPlantIdx === null;
+  if(footPlantIdx !== null && startY !== null){
+    const tolerance = Math.max(2, (worstY - startY) * 0.12); // 12% of the ankle's total drop this window
+    for(let i=windupEndIdx+2;i<=footPlantIdx;i++){
+      const k = kp(frames[i], leadAnkle);
+      if(ok(k) && (worstY - k.y) <= tolerance){ footPlantIdx = i; break; }
+    }
+  }
   if(footPlantIdx === null) footPlantIdx = windupEndIdx + Math.round((peakIdx-windupEndIdx)*0.55);
   footPlantIdx = Math.min(Math.max(footPlantIdx, windupEndIdx+1), peakIdx-2);
   // if foot plant lands within 2 samples of release, our sampling rate
@@ -1714,8 +1728,11 @@ const analyzeSlot = createCameraSlot({
     try{
       setPoseStatus('loading', 'Loading pose model\u2026');
       const detector = await getPoseDetector();
-      setPoseStatus('loading', 'Tracking joints\u2026');
-      const poseResult = await analyzePose(videoEl, detector, p=>{ progressBar.style.width = (p*100).toFixed(0)+'%'; }, range);
+      setPoseStatus('loading', 'Tracking joints\u2026 (denser pass, may take a bit longer)');
+      const poseResult = await withTimeout(
+        analyzePose(videoEl, detector, p=>{ progressBar.style.width = (p*100).toFixed(0)+'%'; }, range),
+        120000, 'Pose tracking'
+      );
       phases = detectPhasesFromPose(poseResult.times, poseResult.frames);
       const heightVal = parseFloat(heightInput.value);
       if(heightVal > 0 && phases.pxHeight){
